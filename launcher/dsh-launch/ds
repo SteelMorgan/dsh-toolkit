@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""ds — детерминированный запуск DSH-работника.
+
+Роль задаёт `DSH_TUI_PRESET` и patch пресетов; provider/model/effort передаются
+явно. Постоянная часть (профиль, изоляция HOME, overlay `dsh-tui`, проверка
+`resolved.json`) живёт в `dsh-worker-launch.py`.
+
+    ds <роль> <провайдер>/<модель>[:<effort>] [-- <аргументы dsh>]
+
+Примеры:
+    ds worker provider-a/model-a:high
+    ds reviewer provider-b/model-b:low
+    ds worker provider-a/model-a:high --print
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+TOOL = Path(__file__).resolve().parent / 'dsh-worker-launch.py'
+
+
+class Refusal(Exception):
+    def __init__(self, code, detail, hint=None):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+        self.hint = hint
+
+    def report(self):
+        text = f'ds: ОТКАЗ {self.code}\n  причина: {self.detail}'
+        if self.hint:
+            text += f'\n  что делать: {self.hint}'
+        return text
+
+
+def parse_route(route):
+    """`<провайдер>/<модель>[:<effort>]` → (provider, model, effort|None)."""
+    name, _, effort = route.partition(':')
+    effort = effort or None
+    if not name:
+        raise Refusal('ROUTE_INVALID', f'пустой маршрут в `{route}`',
+                      'формат: <провайдер>/<модель>[:<effort>]')
+    if '/' not in name:
+        raise Refusal('ROUTE_INVALID', f'маршрут `{name}` не является парой провайдер/модель',
+                      'формат: <провайдер>/<модель>[:<effort>]')
+    provider, _, model = name.partition('/')
+    if not provider or not model:
+        raise Refusal('ROUTE_INVALID', f'маршрут `{name}` разбирается в пустого провайдера или модель',
+                      'формат: <провайдер>/<модель>[:<effort>]')
+    return provider, model, effort
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='ds', add_help=True,
+        description='Запуск DSH-работника: роль + явный provider/model/effort.')
+    parser.add_argument('role', nargs='?', help='роль DSH (DSH_TUI_PRESET и пресеты роли)')
+    parser.add_argument('route', nargs='?', help='<провайдер>/<модель>[:<effort>]')
+    parser.add_argument('--effort', help='уровень effort (если не указан в маршруте)')
+    parser.add_argument('--print', action='store_true', help='только подготовить запуск и напечатать команду')
+    parser.add_argument('--launch-dir',
+                        help='каталог запуска (по умолчанию — новый уникальный ~/.dsh-launches/<роль>-<UTC>-<random>)')
+    parser.add_argument('--dsh', help='путь к dsh (по умолчанию из PATH)')
+    parser.add_argument('--profile', default='tui', help='профиль dsh (по умолчанию tui)')
+    parser.add_argument('--preset', action='append', default=[], metavar='PATH', help='patch пресетов')
+    parser.add_argument('--no-preset', action='store_true', help='не подключать patch пресетов роли')
+    arguments, passthrough = parser.parse_known_args()
+    if passthrough and passthrough[0] == '--':
+        passthrough = passthrough[1:]
+
+    if not arguments.role:
+        raise Refusal('ROLE_REQUIRED', 'роль не задана',
+                      'первый параметр — роль, например: ds worker provider-a/model-a:high')
+    if not arguments.route:
+        raise Refusal('ROUTE_REQUIRED', 'маршрут не задан',
+                      'второй параметр — <провайдер>/<модель>[:<effort>]')
+
+    provider, model, effort = parse_route(arguments.route)
+    if arguments.effort and effort and arguments.effort != effort:
+        raise Refusal('EFFORT_CONFLICT',
+                      f'effort задан дважды: `{effort}` в маршруте и `{arguments.effort}` флагом',
+                      'оставьте один — молчаливый выбор запрещён')
+    effort = effort or arguments.effort
+
+    command = [sys.executable, str(TOOL), '--provider', provider, '--model', model,
+               '--role', arguments.role, '--profile', arguments.profile, '--json']
+    if effort:
+        command += ['--effort', effort]
+    if arguments.launch_dir:
+        command += ['--launch-dir', arguments.launch_dir]
+    if arguments.dsh:
+        command += ['--dsh', arguments.dsh]
+    for preset in arguments.preset:
+        command += ['--preset', preset]
+    if arguments.no_preset:
+        command.append('--no-preset')
+
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        sys.stderr.write(completed.stderr)
+        if not completed.stderr.strip():
+            raise Refusal('LAUNCHER_FAILED',
+                          f'подготовка запуска упала без объяснения (код {completed.returncode})',
+                          'запустите dsh-worker-launch.py напрямую и посмотрите вывод')
+        return completed.returncode
+    try:
+        resolved = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise Refusal('LAUNCHER_FAILED',
+                      f'инструмент подготовки вернул неожиданный вывод: {completed.stdout[-400:]}')
+
+    launcher = Path(resolved['launch_cmd'].split(' ', 1)[1])
+    if arguments.print:
+        suffix = (' ' + ' '.join(passthrough)) if passthrough else ''
+        print(f'LAUNCH_CMD={resolved["launch_cmd"]}{suffix}')
+        print(f'ds: {resolved["provider"]}/{resolved["model"]}'
+              + (f' effort={resolved["effort"]}' if resolved['effort'] else '')
+              + f' role={resolved["role"]} startup={resolved["startup"]["effectiveEffort"]}')
+        return 0
+    os.execvp('bash', ['bash', str(launcher), *passthrough])
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except Refusal as refusal:
+        print(refusal.report(), file=sys.stderr)
+        sys.exit(2)

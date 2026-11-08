@@ -1,0 +1,44 @@
+# dsh-tui-compact-tech bundle patch.
+#
+# `dsh plugin --profile tui add <this package>` appends the bundle to the
+# profile's dsh.profile.bundles; at boot this insert mounts the row after the
+# dsh-tui / dsh-base rows, so `ctx.tools` already exists when apply() runs
+# (and the tools/change sweep catches later registrations).
+#
+# Tune the row in the profile's own cordis.patch.yml by id instead of inserting
+# a second row:
+#
+#   - id: dsh-tui-compact-tech
+#     config:
+#       titleCells: 80
+#
+# `tools` is the list of tool names whose presenters are wrapped. `bash` and
+# `pwsh` are the terminal-card tools; add `bash_persistent` if that tool is in
+# the composition.
+- insert:
+    - id: dsh-tui-compact-tech
+      name: 'dsh-tui-compact-tech'
+      config:
+        enabled: true
+        tools:
+          - bash
+          - pwsh
+        # Patch every tool definition, not only the terminal tools. This is what
+        # applies generic: smart to MCP/Generic results; MCP call headers stay
+        # untouched because compactCallView only rewrites terminal cards.
+        allTools: true
+        # Header-only (default): compact the call title, keep the result view
+        # intact. The TUI draws the collapsed preview AND the Ctrl+O view from
+        # the same result view, so trimming here would shorten both.
+        trimResults: false
+        # The fields below apply only when trimResults: true (lossy in the
+        # card's Ctrl+O view; the model and session log keep the full result).
+        bodyLines: 1
+        failureLines: 4
+        # Header budget in cells for the first command line.
+        titleCells: 100
+        # Generic/MCP cards: smart = JSON-aware summary + head/tail marker.
+        # This is lossy in the card (the TUI renders collapsed and expanded
+        # states from the same view); the model and session log keep the full
+        # result. false | headtail | smart.
+        generic: smart

@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Local config/secrets/logs
+.env
+.credentials*
+*.log
+
+# Dependencies / build caches
+node_modules/
+.pnpm-store/
+
+# OS
+.DS_Store

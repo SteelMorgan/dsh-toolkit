@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# dsh-rowcap launcher: run the real dsh with the rendered-row cap hook.
+# The hook changes only the in-memory module source; node_modules and
+# ~/.dsh-tui are never modified.
+set -euo pipefail
+
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+real="${DSH_REAL_BIN:-}"
+
+if [[ -z "$real" ]]; then
+  # Find the real dsh on PATH, skipping this wrapper's own directory.
+  self_dir="$(cd -- "$here" && pwd)"
+  IFS=: read -r -a parts <<< "${PATH:-}"
+  for dir in "${parts[@]}"; do
+    [[ -z "$dir" ]] && continue
+    resolved="$(cd -- "$dir" 2>/dev/null && pwd || true)"
+    [[ "$resolved" == "$self_dir" ]] && continue
+    if [[ -x "$dir/dsh" ]]; then
+      real="$dir/dsh"
+      break
+    fi
+  done
+fi
+
+if [[ -z "$real" ]]; then
+  printf '%s\n' 'dsh-rowcap: real dsh not found; set DSH_REAL_BIN=/path/to/dsh' >&2
+  exit 127
+fi
+
+loader="$here/loader.mjs"
+if [[ ! -f "$loader" ]]; then
+  printf 'dsh-rowcap: loader not found at %s\n' "$loader" >&2
+  exit 127
+fi
+
+export NODE_OPTIONS="--import=${loader}${NODE_OPTIONS:+ $NODE_OPTIONS}"
+exec "$real" "$@"

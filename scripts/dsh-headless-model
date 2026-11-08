@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Launch dsh headless with an explicit provider/model route.
+#
+# dsh headless has no --model flag; the route is a profile patch on the
+# agent-default-model row. This helper writes that temporary patch and passes
+# the rest of the arguments to the headless app.
+set -euo pipefail
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  cat <<'EOF'
+usage: dsh-headless-model <provider> <model> [headless args...] [task...]
+
+Examples:
+  dsh-headless-model provider-id model-id "run the tests"
+  dsh-headless-model provider-id model-id --json "summarize the diff"
+  echo "run the tests" | dsh-headless-model provider-id model-id
+EOF
+  exit 0
+fi
+if [[ $# -lt 2 ]]; then
+  echo "usage: dsh-headless-model <provider> <model> [headless args...] [task...]" >&2
+  exit 2
+fi
+
+provider="$1"
+model="$2"
+shift 2
+patch="$(mktemp "${TMPDIR:-/tmp}/dsh-headless-model.XXXXXX.yml")"
+trap 'rm -f "$patch"' EXIT
+{
+  printf '%s\n' '- id: agent-default-model' '  config:'
+  printf '    provider: %s\n' "$provider"
+  printf '    model: %s\n' "$model"
+} >"$patch"
+
+dsh --profile headless --patch "$patch" "$@"
